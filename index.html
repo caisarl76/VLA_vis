@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A guided, interactive visualization of vision-language-action model architectures." />
+    <title>VLA Atlas — Interactive Model Walkthrough</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-bar">
+        <a class="brand" href="#" aria-label="VLA Atlas home">
+          <span class="brand-glyph" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>VLA Atlas</span>
+        </a>
+        <span class="app-subtitle">Interactive model anatomy</span>
+        <div class="header-actions">
+          <button id="compareButton" class="header-button">Compare models</button>
+          <button id="aboutButton" class="round-button" aria-label="About this project">i</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="lesson-panel" aria-labelledby="chapterTitle">
+          <header class="chapter-bar">
+            <button id="previousChapter" class="chapter-arrow" aria-label="Previous chapter">‹</button>
+            <div class="chapter-location">
+              <span>CHAPTER <b id="chapterNumber">01</b></span>
+              <strong id="chapterName">Overview</strong>
+            </div>
+            <button id="nextChapter" class="chapter-arrow" aria-label="Next chapter">›</button>
+          </header>
+
+          <div id="lessonScroll" class="lesson-scroll">
+            <article class="lesson-page">
+              <div class="lesson-intro">
+                <div>
+                  <span id="modelClass" class="model-class">VISUOMOTOR POLICY</span>
+                  <h1 id="chapterTitle">Action Chunking Transformer</h1>
+                  <p id="chapterLead" class="chapter-lead"></p>
+                </div>
+                <div id="miniDiagram" class="mini-diagram" aria-label="Architecture overview"></div>
+              </div>
+
+              <div id="tableOfContents" class="table-of-contents"></div>
+
+              <div id="chapterContent" class="chapter-content"></div>
+
+              <div class="chapter-takeaway">
+                <span>KEY IDEA</span>
+                <p id="chapterTakeaway"></p>
+              </div>
+
+              <div class="lesson-actions">
+                <button id="continueButton" class="primary-button">Continue</button>
+                <button id="skipButton" class="secondary-button">Skip to control loop</button>
+              </div>
+            </article>
+          </div>
+
+          <footer class="playback-bar">
+            <button id="playButton" class="play-control" aria-label="Play walkthrough">▶</button>
+            <div class="timeline-wrap">
+              <div id="timeline" class="timeline"></div>
+              <span id="playbackHint">Press Space to continue</span>
+            </div>
+            <span id="stepReadout" class="step-readout">1 / 6</span>
+          </footer>
+        </section>
+
+        <section id="visualPanel" class="visual-panel" aria-label="Interactive 3D model visualization">
+          <nav id="modelTabs" class="model-tabs" aria-label="Select a model"></nav>
+
+          <div id="pathwayToggle" class="pathway-toggle" role="group" aria-label="Select forward pathway">
+            <button class="active" data-pathway="inference">Inference</button>
+            <button data-pathway="training">Training</button>
+          </div>
+
+          <div class="canvas-tools">
+            <button id="resetCamera" class="tool-button" aria-label="Reset camera" title="Reset camera">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.7M4 4v5h5" /></svg>
+            </button>
+            <button id="fullscreenButton" class="tool-button" aria-label="Expand visualization" title="Expand visualization">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /></svg>
+            </button>
+          </div>
+
+          <canvas id="sceneCanvas" aria-label="Drag to orbit, scroll to zoom, and click components to inspect them"></canvas>
+
+          <div class="scene-title">
+            <span id="sceneCategory">VISUOMOTOR POLICY</span>
+            <strong id="sceneModelName">ACT</strong>
+            <small id="sceneYear">2023</small>
+            <em id="sceneReference">ALOHA reference config</em>
+          </div>
+
+          <div class="interaction-hint">
+            <span class="mouse-icon" aria-hidden="true"></span>
+            Drag to orbit · Scroll to zoom · Click a block
+          </div>
+
+          <aside id="blockInspector" class="block-inspector" aria-live="polite">
+            <button id="closeInspector" aria-label="Close component details">×</button>
+            <span id="inspectorType">COMPONENT</span>
+            <h2 id="inspectorTitle">Transformer policy</h2>
+            <p id="inspectorBody"></p>
+            <dl id="inspectorSpecs" class="inspector-specs"></dl>
+          </aside>
+
+          <div id="visualLegend" class="visual-legend"></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="compareDialog" class="compare-dialog">
+      <button class="dialog-close" data-close="compare" aria-label="Close comparison">×</button>
+      <div class="dialog-heading">
+        <span>STRUCTURAL COMPARISON</span>
+        <h2>Same task. Different machinery.</h2>
+        <p>Compare equivalent design decisions without treating unlike model classes as one leaderboard.</p>
+      </div>
+      <div class="compare-selectors">
+        <label>MODEL A<select id="compareA"></select></label>
+        <span>VERSUS</span>
+        <label>MODEL B<select id="compareB"></select></label>
+      </div>
+      <div id="compareVisual" class="compare-visual"></div>
+      <div class="comparison-table-wrap">
+        <table>
+          <thead id="compareHead"></thead>
+          <tbody id="compareBody"></tbody>
+        </table>
+      </div>
+    </dialog>
+
+    <dialog id="aboutDialog" class="about-dialog">
+      <button class="dialog-close" data-close="about" aria-label="Close about dialog">×</button>
+      <span class="dialog-kicker">ABOUT VLA ATLAS</span>
+      <h2>A guided map of physical-AI architectures</h2>
+      <p>
+        The exploded diagrams use a shared educational grammar, while each lesson preserves the model’s actual scope: specialist policy, VLA, World Action Model, or world-model platform.
+      </p>
+      <p>
+        This is an original visualization inspired by the guided interaction pattern of Brendan Bycroft’s LLM visualization. Architecture descriptions link to primary project pages.
+      </p>
+      <a id="aboutSourceLink" href="#" target="_blank" rel="noreferrer">Open selected model’s primary source ↗</a>
+    </dialog>
+
+    <script src="architecture-specs.js"></script>
+    <script src="architecture-diagrams.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
