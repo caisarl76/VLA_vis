@@ -282,6 +282,7 @@ let pathwayMode = query.get("pathway") === "training" ? "training" : "inference"
 let isPlaying = false;
 let playTimer = null;
 let selectedComponentId = null;
+let inspectorAnchor = null;
 let sceneBlocks = [];
 let hitTargets = [];
 let dragState = null;
@@ -522,6 +523,7 @@ function setChapter(nextIndex, options = {}) {
   const model = getModel();
   chapterIndex = (nextIndex + model.chapters.length) % model.chapters.length;
   selectedComponentId = null;
+  inspectorAnchor = null;
   el.inspector.classList.remove("open");
   sceneBlocks = expandScene(model);
   renderChapter();
@@ -596,6 +598,7 @@ function selectModel(id) {
   selectedModelId = id;
   chapterIndex = 0;
   selectedComponentId = null;
+  inspectorAnchor = null;
   pathwayMode = "inference";
   const model = getModel();
   setAccent(model.accent);
@@ -631,6 +634,7 @@ function setPathway(mode) {
   if (!['inference', 'training'].includes(mode) || mode === pathwayMode) return;
   pathwayMode = mode;
   selectedComponentId = null;
+  inspectorAnchor = null;
   el.inspector.classList.remove("open");
   sceneBlocks = expandScene(getModel());
   renderPathwayToggle();
@@ -652,6 +656,7 @@ function resizeCanvas() {
   el.canvas.width = Math.max(1, Math.round(rect.width * ratio));
   el.canvas.height = Math.max(1, Math.round(rect.height * ratio));
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  if (el.inspector.classList.contains("open")) positionInspector();
 }
 
 function rotatePoint(point) {
@@ -880,6 +885,7 @@ function renderScene(time = 0) {
     .sort((a, b) => rotatePoint({ x: a.x, y: a.y, z: a.z }).z - rotatePoint({ x: b.x, y: b.y, z: b.z }).z)
     .forEach(drawBlock);
   sceneBlocks.forEach(drawLabel);
+  if (el.inspector.classList.contains("open")) positionInspector();
   requestAnimationFrame(renderScene);
 }
 
@@ -894,9 +900,92 @@ function pointInPolygon(point, polygon) {
   return inside;
 }
 
+function resolveInspectorBlock() {
+  if (!inspectorAnchor) return null;
+  if (inspectorAnchor.nodeId) {
+    const exact = sceneBlocks.find((block) => block.nodeId === inspectorAnchor.nodeId);
+    if (exact) return exact;
+  }
+  const siblings = sceneBlocks.filter((block) => block.parentId === inspectorAnchor.parentId);
+  if (!siblings.length) return null;
+  if (Number.isInteger(inspectorAnchor.instance)) {
+    const matchingInstance = siblings.find((block) => block.instance === inspectorAnchor.instance);
+    if (matchingInstance) return matchingInstance;
+  }
+  const topBlock = siblings.find((block) => block.isTop && !block.isDetail);
+  return topBlock || siblings[Math.floor(siblings.length / 2)];
+}
+
+function projectedBounds(block) {
+  const points = blockVertices(block).map(project);
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  return {
+    minX: Math.min(...xs), maxX: Math.max(...xs),
+    minY: Math.min(...ys), maxY: Math.max(...ys),
+    centerX: (Math.min(...xs) + Math.max(...xs)) / 2,
+    centerY: (Math.min(...ys) + Math.max(...ys)) / 2,
+  };
+}
+
+function positionInspector() {
+  const block = resolveInspectorBlock();
+  if (!block) return;
+  const panel = el.visualPanel.getBoundingClientRect();
+  const bounds = projectedBounds(block);
+  const gap = 16;
+  const edge = 12;
+  const leftSpace = bounds.minX - gap - edge;
+  const rightSpace = panel.width - bounds.maxX - gap - edge;
+  const widestSide = Math.max(leftSpace, rightSpace);
+  const canFitBeside = widestSide >= 205;
+  const inspectorWidth = canFitBeside
+    ? Math.min(280, widestSide)
+    : Math.min(280, Math.max(220, panel.width - edge * 2));
+  el.inspector.style.width = `${inspectorWidth}px`;
+  const inspectorHeight = el.inspector.offsetHeight;
+  const safeTop = panel.width < 520 ? 154 : 112;
+  const safeBottom = 18;
+  const rightX = bounds.maxX + gap;
+  const leftX = bounds.minX - inspectorWidth - gap;
+  let side;
+  let x;
+  let y = Math.max(safeTop, Math.min(panel.height - inspectorHeight - safeBottom, bounds.centerY - inspectorHeight / 2));
+
+  if (canFitBeside && rightSpace >= leftSpace) {
+    side = "right";
+    x = rightX;
+  } else if (canFitBeside) {
+    side = "left";
+    x = leftX;
+  } else if (bounds.maxY + gap + inspectorHeight <= panel.height - safeBottom) {
+    side = "below";
+    x = Math.max(edge, Math.min(panel.width - inspectorWidth - edge, bounds.centerX - inspectorWidth / 2));
+    y = bounds.maxY + gap;
+  } else {
+    side = "above";
+    x = Math.max(edge, Math.min(panel.width - inspectorWidth - edge, bounds.centerX - inspectorWidth / 2));
+    y = Math.max(safeTop, bounds.minY - inspectorHeight - gap);
+  }
+
+  const pointerY = Math.max(18, Math.min(inspectorHeight - 18, bounds.centerY - y));
+  const pointerX = Math.max(18, Math.min(inspectorWidth - 18, bounds.centerX - x));
+  el.inspector.dataset.side = side;
+  el.inspector.style.left = `${Math.round(x)}px`;
+  el.inspector.style.top = `${Math.round(y)}px`;
+  el.inspector.style.setProperty("--pointer-y", `${Math.round(pointerY)}px`);
+  el.inspector.style.setProperty("--pointer-x", `${Math.round(pointerX)}px`);
+}
+
 function openInspector(component) {
   const parent = getModel().components.find((item) => item.id === (component.parentId || component.id)) || component;
-  selectedComponentId = component.nodeId || component.id;
+  inspectorAnchor = {
+    nodeId: component.nodeId || null,
+    parentId: component.parentId || component.id,
+    instance: Number.isInteger(component.instance) ? component.instance : null,
+  };
+  const anchoredBlock = resolveInspectorBlock();
+  selectedComponentId = anchoredBlock?.nodeId || component.nodeId || component.id;
   el.inspectorType.textContent = `${TYPE_LABELS[component.type].toUpperCase()} · CHAPTER ${parent.chapter + 1}${component.isDetail ? " · INTERNAL LAYER" : ""}`;
   el.inspectorTitle.textContent = component.label;
   el.inspectorBody.textContent = component.description || parent.description;
@@ -911,6 +1000,7 @@ function openInspector(component) {
   el.inspectorSpecs.innerHTML = specs.map(([term, value]) => `<div><dt>${term}</dt><dd>${value}</dd></div>`).join("");
   el.inspector.style.setProperty("--accent", TYPE_COLORS[component.type]);
   el.inspector.classList.add("open");
+  positionInspector();
 }
 
 function inspectAt(clientX, clientY) {
@@ -978,6 +1068,7 @@ document.querySelector("#fullscreenButton").addEventListener("click", () => {
 });
 document.querySelector("#closeInspector").addEventListener("click", () => {
   selectedComponentId = null;
+  inspectorAnchor = null;
   el.inspector.classList.remove("open");
 });
 
