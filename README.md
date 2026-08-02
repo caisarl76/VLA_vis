@@ -41,6 +41,13 @@ Tensor dimensions are tied to these named configurations. Robot-dependent widths
 
 The diagrams use a shared visual ontology so models remain comparable while retaining their different scopes. Architecture facts link to primary implementation, checkpoint, and paper sources from inside the app.
 
+## Add a new model
+
+- [Step-by-step guide for adding a VLA structure](docs/ADDING_A_VLA.md)
+- [Architecture model schema reference](docs/MODEL_SCHEMA.md)
+
+The guide covers pinned references, components and internal layers, typed tensor connections, nested module/layer diagrams, inference and training traces, tensor contracts, comparison metadata, validation, and visual QA.
+
 ## Validate architecture data
 
 Run the same structural checks used before deployment:
