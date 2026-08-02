@@ -23,6 +23,7 @@ Then open `http://localhost:8000`.
 - NVIDIA GR00T N1-2B: Eagle width 1536 and 16-layer diffusion action expert
 - DreamZero-DROID: released Wan2.1 I2V 14B World Action Model configuration with 32 causal blocks
 - NVIDIA Cosmos Predict2.5-2B: 28-layer, width-2048 world diffusion Transformer
+- RLDX-1-MT-DROID: 8B motion- and memory-aware Qwen3-VL policy with a 4+8-block Multi-Stream Action Transformer, 16-step action horizon, and 22-D tactile/torque flow branch
 
 Tensor dimensions are tied to these named configurations. Robot-dependent widths remain explicitly symbolic (`Ds`, `Da`) instead of being guessed.
 

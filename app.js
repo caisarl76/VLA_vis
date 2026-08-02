@@ -264,6 +264,45 @@ const models = [
     links: [["text", "reasoner"], ["image", "tokenizer"], ["video", "tokenizer"], ["tokenizer", "worldModel"], ["reasoner", "worldModel"], ["worldModel", "future"], ["worldModel", "variations"], ["future", "policyData"], ["variations", "policyData"]],
     compare: { Scope: "World foundation model platform", Inputs: "Text + image + video + simulation", Backbone: "World tokenizer + reasoning context", Generator: "Version-specific world generator", Output: "Video worlds + scenario variations", "Temporal loop": "Downstream training / planning", "World prediction": "Yes" },
   },
+  {
+    id: "rldx-1",
+    tab: "RLDX-1",
+    name: "RLDX-1",
+    sceneName: "RLDX-1",
+    category: "Robot foundation model",
+    year: "2026",
+    accent: "#d06b38",
+    source: "https://github.com/RLWRLD/RLDX-1",
+    chapters: [
+      makeChapter("Overview", "RLDX-1", "A memory-aware, physically grounded VLA built around a Multi-Stream Action Transformer.", [
+        "RLDX-1 keeps cognition, state/action, and physical sensing in distinct streams before mixing them with joint attention. That separation makes tactile and torque signals first-class model inputs instead of appending them to an undifferentiated observation vector.",
+        "The DROID mid-training checkpoint also adds motion features and a causal memory Transformer to a Qwen3-VL-derived backbone. Its action model learns a flow field for both robot actions and future physical signals.",
+      ], "RLDX-1’s signature is not merely a larger VLM: it is a three-stream control Transformer with motion, memory, and physics paths."),
+      makeChapter("Inputs", "Observe appearance, motion, embodiment, and contact", "Two short DROID camera clips arrive alongside language, robot state, tactile readings, and torque.", [
+        "The pinned DROID processor uses primary and wrist cameras with four frames per view. Frames are resized with aspect ratio preserved; a natural-language task instruction shares the Qwen3-VL sequence.",
+        "Robot state and action spaces are padded to 64 dimensions for multi-embodiment training. The physical branch is concrete for this checkpoint: 15 tactile values and 7 torque values form a 22-D signal.",
+      ], "Visual context describes the scene; state and physics expose the robot’s configuration and contact dynamics."),
+      makeChapter("Representation", "Build cognition with motion and memory", "Video-aware Qwen3-VL features are distilled into learnable cognition tokens, then augmented with recent history.", [
+        "A motion module is inserted at vision-encoder layer 9 so temporal change can modify the visual representation before language fusion. Sixty-four learnable cognition tokens pass through the 36-layer, 4,096-wide language backbone.",
+        "For memory, 16 cognition tokens from each of four recent timesteps enter a two-layer causal Transformer. The checkpoint concatenates 16 memory outputs with the current 64 cognition tokens, producing 80 VL tokens for action generation.",
+      ], "The action model reads a compact 80-token cognitive state that contains both the present and a learned summary of recent history."),
+      makeChapter("Core model", "Mix three streams without erasing their roles", "MSAT first preserves separate VL, state/action, and physics streams, then fuses them more tightly.", [
+        "Four expanded multi-stream blocks apply stream-specific pre-normalization, Q/K/V projections, RMS-normalized queries and keys, joint 24-head attention, residuals, and SwiGLU MLPs. VL remains 4,096-wide while state/action and physics are 1,536-wide.",
+        "The VL stream is then projected to 1,536 and concatenated with state, a flow-time token, and 16 noisy action tokens. Eight expanded single-stream blocks continue joint attention with the separate physics stream. RoPE is applied to the state/action positions.",
+      ], "Joint attention exchanges information across modalities while residual paths preserve each stream’s specialized representation."),
+      makeChapter("Action output", "Predict motion and future physical response together", "Two decoder paths turn shared MSAT features into a 16-step action chunk and a 16-step physical forecast.", [
+        "An embodiment-selected MLP maps 1,024-D action features to the shared 64-D action interface, then unpadding returns only the live DROID action dimensions.",
+        "A SiLU physics decoder maps the parallel 1,024-D physics features to future 22-D tactile and torque signals. During training, action velocity loss and a weighted physics velocity loss supervise the same flow-matching process.",
+      ], "RLDX-1 does not treat touch as passive context; it learns to forecast the physical signals that accompany the action."),
+      makeChapter("Control loop", "Integrate four flow steps, execute, and remember", "Gaussian action and future-physics samples are refined together with four Euler updates.", [
+        "Each solver step re-encodes the current samples, runs the shared MSAT weights, decodes action and physics velocities, and advances both trajectories. The final 16-action chunk is unpadded and denormalized for the selected embodiment.",
+        "Execution produces new video, state, tactile, and torque observations. The current cognition tokens enter the four-step memory cache before the next policy call, closing both the physical and cognitive loops.",
+      ], "RLDX-1 closes the loop through both receding action generation and a persistent cognition-token memory."),
+    ],
+    components: [],
+    links: [],
+    compare: {},
+  },
 ];
 
 // Replace the introductory sketches above with checkpoint-pinned architecture
@@ -292,6 +331,7 @@ let selectedComponentId = null;
 let inspectorAnchor = null;
 let sceneBlocks = [];
 let hitTargets = [];
+let labelBounds = [];
 let dragState = null;
 let didDrag = false;
 
@@ -1116,19 +1156,60 @@ function drawLabel(component) {
   ctx.font = "600 7px ui-monospace, SFMono-Regular, Menlo, monospace";
   const shapeWidth = ctx.measureText(component.shape || "").width;
   const width = Math.max(labelWidth, shapeWidth) + 16;
-  const x = point.x + 7;
-  const y = point.y - 6;
+  const height = component.shape ? 27 : 18;
+  const canvasRect = el.canvas.getBoundingClientRect();
+  const verticalOffsets = [0];
+  for (let offset = 30; offset <= 330; offset += 30) verticalOffsets.push(-offset, offset);
+  const horizontalCandidates = [point.x + 7, point.x - width - 7];
+  let placement = null;
+  for (const verticalOffset of verticalOffsets) {
+    for (const horizontalCandidate of horizontalCandidates) {
+      const candidate = {
+        x: Math.max(4, Math.min(canvasRect.width - width - 4, horizontalCandidate)),
+        y: Math.max(4, Math.min(canvasRect.height - height - 4, point.y - 19 + verticalOffset)),
+        width,
+        height,
+      };
+      const overlaps = labelBounds.some((placed) => !(
+        candidate.x + candidate.width + 3 < placed.x
+        || candidate.x > placed.x + placed.width + 3
+        || candidate.y + candidate.height + 3 < placed.y
+        || candidate.y > placed.y + placed.height + 3
+      ));
+      if (!overlaps) {
+        placement = candidate;
+        break;
+      }
+    }
+    if (placement) break;
+  }
+  placement ||= {
+    x: Math.max(4, Math.min(canvasRect.width - width - 4, point.x + 7)),
+    y: Math.max(4, Math.min(canvasRect.height - height - 4, point.y - 19)),
+    width,
+    height,
+  };
+  labelBounds.push(placement);
+  const x = placement.x;
+  const y = placement.y;
+  const connectorX = x > point.x ? x : x + width;
+  const connectorY = Math.max(y + 4, Math.min(y + height - 4, point.y));
+  if (Math.abs(connectorX - point.x) > 10 || Math.abs(connectorY - point.y) > 10) {
+    ctx.strokeStyle = shade(TYPE_COLORS[component.type], -0.08, 0.34 * opacity);
+    ctx.lineWidth = 0.65;
+    ctx.beginPath(); ctx.moveTo(point.x, point.y); ctx.lineTo(connectorX, connectorY); ctx.stroke();
+  }
   ctx.fillStyle = `rgba(250,251,248,${0.88 * opacity})`;
   ctx.strokeStyle = shade(TYPE_COLORS[component.type], -0.08, 0.58 * opacity);
   ctx.lineWidth = 0.7;
-  ctx.beginPath(); ctx.roundRect(x, y - 13, width, component.shape ? 27 : 18, 3); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.roundRect(x, y, width, height, 3); ctx.fill(); ctx.stroke();
   ctx.fillStyle = `rgba(28,38,35,${0.86 * opacity})`;
   ctx.font = "650 8px Inter, sans-serif";
-  ctx.fillText(component.label, x + 7, y + 1);
+  ctx.fillText(component.label, x + 7, y + 14);
   if (component.shape) {
     ctx.fillStyle = `rgba(73,84,80,${0.78 * opacity})`;
     ctx.font = "600 7px ui-monospace, SFMono-Regular, Menlo, monospace";
-    ctx.fillText(component.shape, x + 7, y + 11);
+    ctx.fillText(component.shape, x + 7, y + 24);
   }
   ctx.restore();
 }
@@ -1136,6 +1217,7 @@ function drawLabel(component) {
 function renderScene(time = 0) {
   const rect = el.canvas.getBoundingClientRect();
   ctx.clearRect(0, 0, rect.width, rect.height);
+  labelBounds = [];
   camera.yaw += (camera.desiredYaw - camera.yaw) * 0.09;
   camera.pitch += (camera.desiredPitch - camera.pitch) * 0.09;
   camera.zoom += (camera.desiredZoom - camera.zoom) * 0.09;
