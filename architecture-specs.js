@@ -17,19 +17,37 @@
     repeat: options.repeat || 1, gap: options.gap || 0.28, twist: options.twist || 0,
     mode: options.mode || "both", repeatLabel: options.repeatLabel || "",
     description: options.description || "",
+    role: options.role || "module", confidence: options.confidence || "",
+    sourceRefs: options.sourceRefs || [], accepts: options.accepts || [],
     layers: options.layers || [],
   });
 
-  const link = (from, to, mode = "both", label = "") => ({ from, to, mode, label });
+  const link = (from, to, mode = "both", label = "", options = {}) => ({
+    from, to, mode, label, kind: options.kind || "data", tensor: options.tensor || "",
+  });
 
   window.ARCHITECTURE_SPECS = {
     act: {
+      schemaVersion: 2,
       reference: "ACT · ALOHA, 4-camera example",
       configNote: "B symbolic · Nc=4 · 480×640 RGB · state/action=14 · chunk=100 · d=512",
       sources: [
         ["ACT implementation", "https://github.com/tonyzhaozh/act"],
         ["ACT paper", "https://arxiv.org/abs/2304.13705"],
       ],
+      provenance: {
+        status: "implementation-pinned",
+        confidence: "Verified against the public ACT reference implementation and paper",
+        reviewed: "2026-08-02",
+        evidence: {
+          cameras: "ALOHA dataset and policy configuration",
+          resnet: "DETR-style shared backbone used by ACT",
+          cvae: "Training-only latent posterior in the ACT policy implementation",
+          encoder: "ACT Transformer encoder configuration",
+          decoder: "ACT Transformer decoder and learned query configuration",
+          ensemble: "Temporal aggregation in the ACT evaluation loop",
+        },
+      },
       symbols: ["B batch", "Nc cameras (4 here)", "T chunk (100)", "Da action dim (14)", "d model width (512)"],
       components: [
         node("cameras", "RGB cameras × Nc", "vision", 1, -2.5, -7.1, "B×4×3×480×640", {
@@ -58,11 +76,11 @@
           ],
         }),
         node("inputProj", "Image 1×1 projection", "vision", 2, -2.9, -3.55, "B×4×512×15×20", {
-          w: 3.3, op: "Conv2d 512→512, kernel 1", description: "Projects each final ResNet feature map into ACT's 512-wide Transformer space.",
+          w: 3.3, input: "B·4×512×15×20", op: "Conv2d 512→512, kernel 1", description: "Projects each final ResNet feature map into ACT's 512-wide Transformer space.",
           layers: [layer("1×1 channel projection", "B·4×512×15×20", "B·4×512×15×20", "Conv2d 512→512, k1", "—", "Linear")],
         }),
         node("imageTokens", "Spatial image tokens", "vision", 2, -2.4, -2.25, "1200×B×512", {
-          w: 3.6, op: "Concatenate cameras along width; flatten H×W", description: "Four 15×20 maps become 1,200 ordered spatial tokens with sine positional encodings.",
+          w: 3.6, input: "B×4×512×15×20", op: "Concatenate cameras along width; flatten H×W", description: "Four 15×20 maps become 1,200 ordered spatial tokens with sine positional encodings.",
           layers: [
             layer("Camera-width concat", "4 × [B×512×15×20]", "B×512×15×80", "torch.cat(width)", "—", "—"),
             layer("Spatial flatten", "B×512×15×80", "1200×B×512", "flatten + permute", "—", "—"),
@@ -93,10 +111,10 @@
           layers: [layer("Latent linear", "B×32", "1×B×512", "Linear 32→512")],
         }),
         node("memoryInput", "Encoder source tokens", "compute", 3, 0, -1.25, "1202×B×512", {
-          w: 4.35, d: 1.55, op: "Concat [latent, qpos, image tokens]", description: "Correct ACT encoder order: latent and proprio tokens are prepended to 1,200 image tokens.",
+          w: 4.35, d: 1.55, input: "[1 + 1 + 1200]×B×512", accepts: ["1×B×512", "1×B×512", "1200×B×512"], op: "Concat [latent, qpos, image tokens]", description: "Correct ACT encoder order: latent and proprio tokens are prepended to 1,200 image tokens.",
         }),
         node("encoder", "Transformer encoder ×4", "compute", 3, -0.5, 0.05, "1202×B×512", {
-          w: 4.5, d: 2.0, repeat: 4, gap: 0.31, repeatLabel: "4 layers · shared shape", norm: "post-LayerNorm", activation: "ReLU", op: "Self-attention + FFN",
+          w: 4.5, d: 2.0, input: "1202×B×512", repeat: 4, gap: 0.31, repeatLabel: "4 layers · shared shape", norm: "post-LayerNorm", activation: "ReLU", op: "Self-attention + FFN",
           description: "Four post-norm encoder layers contextualize every source token.",
           layers: [
             layer("Multi-head self-attention", "1202×B×512", "1202×B×512", "8 heads × 64", "—", "softmax"),
@@ -110,7 +128,7 @@
           w: 2.8, op: "100 learned positional embeddings", description: "One learned query position for every future action in the chunk; decoder content starts at zero.",
         }),
         node("decoder", "Transformer decoder ×7", "compute", 3, 0.35, 2.1, "100×B×512", {
-          w: 4.55, d: 2.1, repeat: 7, gap: 0.29, repeatLabel: "7 decoder layers", norm: "post-LayerNorm + final LayerNorm", activation: "ReLU", op: "Self-attention + cross-attention + FFN",
+          w: 4.55, d: 2.1, input: "Q:100×B×512; KV:1202×B×512", accepts: ["100×B×512", "1202×B×512"], repeat: 7, gap: 0.29, repeatLabel: "7 decoder layers", norm: "post-LayerNorm + final LayerNorm", activation: "ReLU", op: "Self-attention + cross-attention + FFN",
           description: "Seven decoder layers let 100 action queries communicate, then cross-attend to the encoded visual/proprio/latent memory.",
           layers: [
             layer("Query self-attention", "100×B×512", "100×B×512", "8 heads × 64", "LayerNorm after residual", "softmax"),
@@ -120,18 +138,18 @@
           ],
         }),
         node("actionHead", "Action head", "action", 4, -1.7, 4.8, "B×100×14", {
-          w: 3.05, op: "Linear 512→14", description: "Projects each decoded query into a 14-D joint target.",
+          w: 3.05, input: "100×B×512", op: "Transpose to batch-first; Linear 512→14", description: "Projects each decoded query into a 14-D joint target.",
           layers: [layer("Continuous action linear", "B×100×512", "B×100×14", "Linear 512→14", "—", "linear")],
         }),
         node("padHead", "Padding head", "action", 4, 2.0, 4.75, "B×100×1", {
-          w: 2.65, op: "Linear 512→1", description: "Predicts whether a sequence position is padding during variable-length training.",
+          w: 2.65, mode: "training", op: "Linear 512→1", description: "Predicts whether a sequence position is padding during variable-length training.",
           layers: [layer("Padding logit", "B×100×512", "B×100×1", "Linear 512→1", "—", "logit")],
         }),
         node("chunk", "Predicted action chunk", "action", 4, 0, 5.9, "B×100×14", {
-          w: 4.6, d: 1.5, grid: [14, 4], op: "Denormalize to joint targets", description: "All 100 future 14-D targets are produced in one forward pass.",
+          w: 4.6, d: 1.5, input: "B×100×14", grid: [14, 4], op: "Denormalize to joint targets", description: "All 100 future 14-D targets are produced in one forward pass.",
         }),
         node("ensemble", "Temporal ensemble", "action", 5, 0, 7.15, "B×14 now", {
-          w: 3.5, repeat: 3, gap: 0.18, repeatLabel: "overlapping chunks", op: "Exponentially weighted average", description: "Overlapping predictions for the current timestep are blended; newer chunks receive higher weight.",
+          w: 3.5, input: "K overlapping predictions × B×14", repeat: 3, gap: 0.18, repeatLabel: "overlapping chunks", op: "Exponentially weighted average", description: "Overlapping predictions for the current timestep are blended; newer chunks receive higher weight.",
           layers: [
             layer("Collect overlaps", "K predictions × B×14", "K×B×14", "Align by execution timestamp"),
             layer("Exponential weights", "ages 0…K−1", "K scalars", "exp(−0.01·age)", "sum-to-one", "exp"),
@@ -140,11 +158,24 @@
         }),
       ],
       links: [
-        link("cameras", "resnet"), link("resnet", "inputProj"), link("inputProj", "imageTokens"), link("imageTokens", "memoryInput"),
-        link("qpos", "qposProj"), link("qposProj", "memoryInput"), link("prior", "latentProj", "inference"),
-        link("demoActions", "cvae", "training"), link("qpos", "cvae", "training"), link("cvae", "latentProj", "training"),
-        link("latentProj", "memoryInput"), link("memoryInput", "encoder"), link("encoder", "decoder"), link("queries", "decoder"),
-        link("decoder", "actionHead"), link("decoder", "padHead", "training"), link("actionHead", "chunk"), link("chunk", "ensemble"),
+        link("cameras", "resnet", "both", "", { tensor: "B×4×3×480×640" }),
+        link("resnet", "inputProj", "both", "", { tensor: "B·4×512×15×20" }),
+        link("inputProj", "imageTokens", "both", "", { tensor: "B×4×512×15×20" }),
+        link("imageTokens", "memoryInput", "both", "visual tokens", { tensor: "1200×B×512" }),
+        link("qpos", "qposProj", "both", "", { tensor: "B×14" }),
+        link("qposProj", "memoryInput", "both", "proprio token", { tensor: "1×B×512", kind: "condition" }),
+        link("prior", "latentProj", "inference", "z=0", { tensor: "B×32", kind: "condition" }),
+        link("demoActions", "cvae", "training", "posterior target", { tensor: "B×100×14", kind: "condition" }),
+        link("qpos", "cvae", "training", "posterior state", { tensor: "B×14", kind: "condition" }),
+        link("cvae", "latentProj", "training", "sampled z", { tensor: "B×32", kind: "condition" }),
+        link("latentProj", "memoryInput", "both", "latent token", { tensor: "1×B×512", kind: "condition" }),
+        link("memoryInput", "encoder", "both", "source sequence", { tensor: "1202×B×512" }),
+        link("encoder", "decoder", "both", "memory K,V", { tensor: "1202×B×512", kind: "cross" }),
+        link("queries", "decoder", "both", "query positions", { tensor: "100×B×512", kind: "condition" }),
+        link("decoder", "actionHead", "both", "decoded queries", { tensor: "100×B×512" }),
+        link("decoder", "padHead", "training", "decoded queries", { tensor: "100×B×512" }),
+        link("actionHead", "chunk", "both", "joint targets", { tensor: "B×100×14" }),
+        link("chunk", "ensemble", "both", "overlapping predictions", { tensor: "B×100×14", kind: "loop" }),
       ],
       flowRows: {
         inference: [
@@ -163,7 +194,47 @@
           ["decoder", "padHead"],
         ],
       },
-      compare: { Scope: "ACT ALOHA specialist policy", Inputs: "4× RGB 480×640 + qpos 14", Backbone: "Shared ResNet-18 → 512", Generator: "4-layer encoder + 7-layer decoder", Output: "100×14 action chunk", "Temporal loop": "Exponential temporal ensemble", "World prediction": "No" },
+      flowSteps: {
+        inference: [
+          { title: "Read synchronized observations", tensor: "RGB B×4×3×480×640 · qpos B×14", nodes: ["cameras", "qpos"], note: "Four views and the current joints enter as parallel input branches." },
+          { title: "Extract visual features", tensor: "B·4×512×15×20", nodes: ["cameras", "resnet"], note: "The same ResNet-18 weights process every camera." },
+          { title: "Create spatial image tokens", tensor: "1200×B×512", nodes: ["resnet", "inputProj", "imageTokens"], note: "A 1×1 projection, view concatenation, flattening, and 2-D positions produce image tokens." },
+          { title: "Embed state and the inference prior", tensor: "two tokens · 1×B×512 each", nodes: ["qpos", "qposProj", "prior", "latentProj"], note: "Inference uses z=0; the state and latent projections remain separate tokens." },
+          { title: "Assemble encoder memory", tensor: "[z, qpos, image] = 1202×B×512", nodes: ["imageTokens", "qposProj", "latentProj", "memoryInput"], note: "Latent and proprioception are prepended to the 1,200 visual tokens." },
+          { title: "Contextualize source tokens", tensor: "1202×B×512", nodes: ["memoryInput", "encoder"], note: "Four post-norm encoder layers apply self-attention and 512→3200→512 feed-forward blocks." },
+          { title: "Initialize action queries", tensor: "100×B×512", nodes: ["queries", "decoder"], note: "One learned query position represents each future action in the chunk." },
+          { title: "Cross-attend to encoder memory", tensor: "Q:100 · KV:1202 · d=512", nodes: ["encoder", "decoder"], note: "Decoder queries retrieve visual, proprioceptive, and latent context through cross-attention." },
+          { title: "Refine the action sequence", tensor: "100×B×512", nodes: ["decoder"], note: "Seven decoder layers combine query self-attention, memory cross-attention, residuals, and ReLU FFNs." },
+          { title: "Project continuous actions", tensor: "B×100×14", nodes: ["decoder", "actionHead"], note: "A linear head maps each decoded token to a 14-D bimanual joint target." },
+          { title: "Denormalize the action chunk", tensor: "B×100×14", nodes: ["actionHead", "chunk"], note: "All 100 targets are available after one policy forward pass." },
+          { title: "Blend the action executed now", tensor: "overlapping chunks → B×14", nodes: ["chunk", "ensemble"], note: "Temporal aggregation weights overlapping predictions for the current control timestamp." },
+        ],
+        training: [
+          { title: "Read observations and demonstration", tensor: "RGB · qpos · target B×100×14", nodes: ["cameras", "qpos", "demoActions"], note: "Training adds the demonstrated action chunk as a posterior target." },
+          { title: "Encode visual observations", tensor: "1200×B×512 image tokens", nodes: ["cameras", "resnet", "inputProj", "imageTokens"], note: "The visual path is shared with inference." },
+          { title: "Infer the CVAE posterior", tensor: "102 tokens → μ, logσ² ∈ B×32", nodes: ["qpos", "demoActions", "cvae"], note: "[CLS], joints, and demonstrated actions pass through four posterior encoder layers." },
+          { title: "Sample and project z", tensor: "B×32 → 1×B×512", nodes: ["cvae", "latentProj"], note: "Reparameterization supplies a training latent; inference replaces it with zero." },
+          { title: "Project image and robot state", tensor: "1200 image + 1 qpos token", nodes: ["imageTokens", "qposProj"], note: "The observation branches are converted to the shared width d=512." },
+          { title: "Assemble and encode memory", tensor: "1202×B×512", nodes: ["latentProj", "qposProj", "imageTokens", "memoryInput", "encoder"], note: "The source sequence passes through four self-attention encoder layers." },
+          { title: "Decode learned action queries", tensor: "100×B×512", nodes: ["queries", "encoder", "decoder"], note: "Seven decoder layers self-attend and cross-attend to encoded memory." },
+          { title: "Produce action and padding heads", tensor: "actions B×100×14 · padding B×100×1", nodes: ["decoder", "actionHead", "padHead"], note: "The action head supports reconstruction; the training-only padding head marks invalid positions." },
+          { title: "Optimize reconstruction and KL", tensor: "predicted chunk + posterior statistics", nodes: ["cvae", "actionHead", "chunk"], note: "ACT combines action reconstruction with KL regularization of the latent posterior." },
+        ],
+      },
+      validation: {
+        tensorContracts: [
+          { from: "qpos", to: "qposProj", tensor: "B×14" },
+          { from: "prior", to: "latentProj", tensor: "B×32", mode: "inference" },
+          { from: "cvae", to: "latentProj", tensor: "B×32", mode: "training" },
+          { from: "imageTokens", to: "memoryInput", tensor: "1200×B×512" },
+          { from: "qposProj", to: "memoryInput", tensor: "1×B×512" },
+          { from: "latentProj", to: "memoryInput", tensor: "1×B×512" },
+          { from: "memoryInput", to: "encoder", tensor: "1202×B×512" },
+          { from: "encoder", to: "decoder", tensor: "1202×B×512", role: "cross-attention memory" },
+          { from: "actionHead", to: "chunk", tensor: "B×100×14" },
+        ],
+      },
+      compare: { Scope: "ACT ALOHA specialist policy", Inputs: "4× RGB 480×640 + qpos 14", Backbone: "Shared ResNet-18 → 512", Fusion: "[z, qpos, 1,200 image tokens]", Generator: "4-layer encoder + 7-layer decoder", Output: "100×14 action chunk", "Temporal loop": "Exponential temporal ensemble", "World prediction": "No" },
     },
 
     "diffusion-policy": {
@@ -204,7 +275,7 @@
       ],
       links: [link("rgb", "crop"), link("crop", "obsResnet"), link("obsResnet", "spatialSoftmax"), link("spatialSoftmax", "obsCondition"), link("robotState", "obsCondition"), link("obsCondition", "unet"), link("noise", "unet"), link("timeEmbed", "unet"), link("unet", "trajectory"), link("trajectory", "prefix"), link("prefix", "replan"), link("replan", "rgb")],
       flowRows: { inference: [["rgb", "crop", "obsResnet", "spatialSoftmax", "obsCondition", "unet"], ["robotState", "obsCondition"], ["noise", "unet", "trajectory", "prefix", "replan"], ["timeEmbed", "unet"]], training: [["rgb", "crop", "obsResnet", "spatialSoftmax", "obsCondition", "unet"], ["robotState", "obsCondition"], ["noised target xₜ", "unet", "noise-prediction loss"], ["timeEmbed", "unet"]] },
-      compare: { Scope: "Push-T specialist policy", Inputs: "2× RGB 96² + 2× agent xy", Backbone: "ResNet-18 + SpatialSoftmax64", Generator: "Conditional 1-D U-Net; 100 steps", Output: "16×2 trajectory; execute 8", "Temporal loop": "Receding-horizon regeneration", "World prediction": "No" },
+      compare: { Scope: "Push-T specialist policy", Inputs: "2× RGB 96² + 2× agent xy", Backbone: "ResNet-18 + SpatialSoftmax64", Fusion: "Flatten 2×(vision64 + state2) → condition132", Generator: "Conditional 1-D U-Net; 100 steps", Output: "16×2 trajectory; execute 8", "Temporal loop": "Receding-horizon regeneration", "World prediction": "No" },
     },
 
     gr00t: {

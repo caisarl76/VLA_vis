@@ -4,7 +4,7 @@ An interactive, dependency-free architecture explorer for robot policies, vision
 
 ![ACT architecture overview](preview.png)
 
-The interface combines a guided lesson, checkpoint-pinned tensor shapes, inference/training pathway toggles, expandable layer inventories, and an original canvas-based exploded renderer. Selecting a chapter replaces generic module slabs with their internal operators, normalization, activation, input shape, and output shape.
+The interface combines a guided lesson, checkpoint-pinned tensor shapes, inference/training pathway toggles, progressive system/module/layer depth, animated tensor traces, expandable layer inventories, and an original canvas-based exploded renderer. Selecting a chapter can replace generic module slabs with their internal operators, normalization, activation, input shape, and output shape.
 
 ## Run locally
 
@@ -32,12 +32,24 @@ Tensor dimensions are tied to these named configurations. Robot-dependent widths
 - Scroll over the canvas to zoom.
 - Click a block to inspect its role.
 - Switch between **Inference** and **Training** to reveal posterior, target, and loss-only branches.
+- Switch between **System**, **Modules**, and **Layers** without changing the underlying forward path.
+- Play the **Forward trace** or scrub its slider to follow active tensors through the 2-D and 3-D views.
 - Open a chapter's **Layer inventory** to inspect every layer without relying on dense canvas labels.
 - Use the chapter arrows, timeline, or Space key to advance the walkthrough.
 - Open **Compare models** for an aligned structural comparison.
 - Use the expand button to focus on the visualization.
 
 The diagrams use a shared visual ontology so models remain comparable while retaining their different scopes. Architecture facts link to primary implementation, checkpoint, and paper sources from inside the app.
+
+## Validate architecture data
+
+Run the same structural checks used before deployment:
+
+```bash
+node scripts/validate-architecture.mjs
+```
+
+The validator checks component and edge references, pathway modes, diagram-to-schema links, layer metadata, ACT forward-trace targets, and declared tensor contracts.
 
 ## GitHub Pages
 

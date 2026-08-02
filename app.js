@@ -276,11 +276,18 @@ models.forEach((model) => {
 
 const query = new URLSearchParams(window.location.search);
 const validModel = (id) => models.some((model) => model.id === id);
+const requestedStepValue = Number(query.get("step"));
+const requestedFlowStep = query.has("step") && Number.isFinite(requestedStepValue) ? Math.max(0, requestedStepValue) : null;
 let selectedModelId = validModel(query.get("model")) ? query.get("model") : "act";
 let chapterIndex = Math.max(0, Math.min(5, Number(query.get("chapter")) || 0));
 let pathwayMode = query.get("pathway") === "training" ? "training" : "inference";
+let architectureDepth = ["system", "modules", "layers"].includes(query.get("depth")) ? query.get("depth") : "layers";
 let isPlaying = false;
 let playTimer = null;
+let traceEnabled = false;
+let tracePlaying = false;
+let traceTimer = null;
+let flowStepIndex = 0;
 let selectedComponentId = null;
 let inspectorAnchor = null;
 let sceneBlocks = [];
@@ -326,12 +333,22 @@ const el = {
   sceneYear: document.querySelector("#sceneYear"),
   sceneReference: document.querySelector("#sceneReference"),
   pathwayToggle: document.querySelector("#pathwayToggle"),
+  detailToggle: document.querySelector("#detailToggle"),
   visualLegend: document.querySelector("#visualLegend"),
   inspector: document.querySelector("#blockInspector"),
   inspectorType: document.querySelector("#inspectorType"),
   inspectorTitle: document.querySelector("#inspectorTitle"),
   inspectorBody: document.querySelector("#inspectorBody"),
   inspectorSpecs: document.querySelector("#inspectorSpecs"),
+  inspectorSource: document.querySelector("#inspectorSource"),
+  traceControls: document.querySelector("#traceControls"),
+  traceReadout: document.querySelector("#traceReadout"),
+  traceTitle: document.querySelector("#traceTitle"),
+  traceTensor: document.querySelector("#traceTensor"),
+  tracePrevious: document.querySelector("#tracePrevious"),
+  tracePlay: document.querySelector("#tracePlay"),
+  traceRange: document.querySelector("#traceRange"),
+  traceNext: document.querySelector("#traceNext"),
   compareDialog: document.querySelector("#compareDialog"),
   compareA: document.querySelector("#compareA"),
   compareB: document.querySelector("#compareB"),
@@ -358,6 +375,9 @@ function updateUrl() {
   url.searchParams.set("model", selectedModelId);
   url.searchParams.set("chapter", chapterIndex);
   url.searchParams.set("pathway", pathwayMode);
+  url.searchParams.set("depth", architectureDepth);
+  if (traceEnabled) url.searchParams.set("step", flowStepIndex);
+  else url.searchParams.delete("step");
   window.history.replaceState({}, "", url);
 }
 
@@ -381,6 +401,10 @@ function renderMiniDiagram(model) {
 
 function isModeVisible(item) {
   return !item?.mode || item.mode === "both" || item.mode === pathwayMode;
+}
+
+function isDepthVisible(item) {
+  return !item?.view || item.view === "all" || item.view === architectureDepth;
 }
 
 function getFlowItem(model, id) {
@@ -417,17 +441,40 @@ function diagramEdgeLabel(edge, fromRect, toRect) {
   return `<text class="diagram-edge-label diagram-edge-label-${edge.kind}" x="${(start.x + end.x) / 2}" y="${(start.y + end.y) / 2 - 5}">${edge.label}</text>`;
 }
 
+function renderSystemArchitecture(model) {
+  const stages = model.chapters.slice(1).map((chapter, index) => {
+    const stageChapter = index + 1;
+    const components = model.components.filter((component) => component.chapter === stageChapter && isModeVisible(component));
+    if (!components.length) return "";
+    const shapes = [...new Set(components.map((component) => component.output || component.shape).filter(Boolean))];
+    return `
+      <button class="system-stage ${chapterIndex === stageChapter ? "focus" : ""}" data-system-chapter="${stageChapter}">
+        <span>${String(stageChapter).padStart(2, "0")}</span>
+        <div><b>${chapter.name}</b><small>${chapter.title}</small></div>
+        <code>${components.length} modules · ${shapes.slice(0, 2).join(" · ")}${shapes.length > 2 ? " · …" : ""}</code>
+        <em>Open modules →</em>
+      </button>`;
+  }).filter(Boolean);
+  return `
+    <section class="architecture-schematic system-schematic" aria-label="${model.reference} system architecture">
+      <header><span>${pathwayMode.toUpperCase()} · SYSTEM ARCHITECTURE</span><em>One card per functional stage. Select a stage to expand its modules.</em></header>
+      <div class="system-stage-flow">${stages.map((stage, index) => `${index ? '<i aria-hidden="true">↓</i>' : ""}${stage}`).join("")}</div>
+      <footer class="diagram-legend"><span class="system-depth-note">SYSTEM → MODULES → LAYERS preserves the same forward path at increasing depth.</span></footer>
+    </section>`;
+}
+
 function renderArchitectureDiagram(model) {
+  if (architectureDepth === "system") return renderSystemArchitecture(model);
   const diagram = window.ARCHITECTURE_DIAGRAMS?.[model.id];
   if (!diagram) return "";
-  const nodes = diagram.nodes.filter(isModeVisible);
+  const nodes = diagram.nodes.filter((node) => isModeVisible(node) && isDepthVisible(node));
   const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-  const groups = diagram.groups.filter(isModeVisible);
-  const edges = diagram.edges.filter((edge) => isModeVisible(edge) && nodeMap.has(edge.from) && nodeMap.has(edge.to));
+  const groups = diagram.groups.filter((group) => isModeVisible(group) && isDepthVisible(group));
+  const edges = diagram.edges.filter((edge) => isModeVisible(edge) && isDepthVisible(edge) && nodeMap.has(edge.from) && nodeMap.has(edge.to));
   const focused = (item) => chapterIndex === 0 || item.chapter === chapterIndex;
   return `
     <section class="architecture-schematic" aria-label="Hierarchical ${pathwayMode} architecture diagram">
-      <header><span>${pathwayMode.toUpperCase()} ARCHITECTURE</span><em>Containers are modules. Arrows terminate at the layer that consumes the tensor.</em></header>
+      <header><span>${pathwayMode.toUpperCase()} · ${architectureDepth.toUpperCase()} ARCHITECTURE</span><em>${architectureDepth === "layers" ? "Arrows terminate at the exact layer that consumes the tensor." : "Repeated layers are collapsed into named modules."}</em></header>
       <div class="schematic-scroll">
         <svg viewBox="0 0 ${diagram.width} ${diagram.height}" role="img" aria-label="${model.reference} nested forward graph">
           <defs>
@@ -437,7 +484,7 @@ function renderArchitectureDiagram(model) {
           <g class="diagram-edges">${edges.map((edge) => {
             const from = nodeMap.get(edge.from); const to = nodeMap.get(edge.to);
             const active = focused(from) || focused(to);
-            return `<g class="diagram-edge ${edge.kind} ${active ? "focus" : "muted"}"><path d="${diagramPath(edge, from, to)}" marker-end="url(#arrow-${model.id}-${edge.kind})" />${diagramEdgeLabel(edge, from, to)}</g>`;
+            return `<g class="diagram-edge ${edge.kind} ${active ? "focus" : "muted"}" data-edge-from="${from.componentId || ""}" data-edge-to="${to.componentId || ""}"><path d="${diagramPath(edge, from, to)}" marker-end="url(#arrow-${model.id}-${edge.kind})" />${diagramEdgeLabel(edge, from, to)}</g>`;
           }).join("")}</g>
           <g class="diagram-nodes">${nodes.map((node) => `<g class="diagram-node ${focused(node) ? "focus" : "muted"}" tabindex="0" role="button" data-diagram-component="${node.componentId || ""}" data-diagram-layer="${Number.isInteger(node.layerIndex) ? node.layerIndex : ""}" style="--node-color:${TYPE_COLORS[node.type]}"><rect x="${node.x}" y="${node.y}" width="${node.w}" height="${node.h}" rx="5" /><foreignObject x="${node.x + 9}" y="${node.y + 7}" width="${node.w - 18}" height="${node.h - 12}"><div xmlns="http://www.w3.org/1999/xhtml" class="diagram-node-copy"><b>${node.label}</b><small>${node.shape}</small></div></foreignObject></g>`).join("")}</g>
         </svg>
@@ -447,6 +494,8 @@ function renderArchitectureDiagram(model) {
 }
 
 function renderLayerInventory(model) {
+  if (architectureDepth === "system") return "";
+  if (architectureDepth === "modules") return `<p class="architecture-hint">Module view keeps repeated blocks collapsed. Switch depth to <b>Layers</b> to expose attention, residual, normalization, activation, and feed-forward operations.</p>`;
   if (chapterIndex === 0) return `<p class="architecture-hint">Choose a chapter to explode its modules into individual layers. Every canvas label shows the output tensor shape; click a slab for its complete operator specification.</p>`;
   const components = model.components.filter((component) => component.chapter === chapterIndex && isModeVisible(component));
   if (!components.length) return "";
@@ -461,6 +510,13 @@ function renderLayerInventory(model) {
 }
 
 function bindDiagramNodes() {
+  el.chapterContent.querySelectorAll("[data-system-chapter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      architectureDepth = "modules";
+      setChapter(Number(button.dataset.systemChapter));
+      renderDetailToggle();
+    });
+  });
   el.chapterContent.querySelectorAll("[data-diagram-component]").forEach((button) => {
     const component = getModel().components.find((item) => item.id === button.dataset.diagramComponent);
     if (!component) return;
@@ -521,6 +577,7 @@ function renderChapter() {
 
 function setChapter(nextIndex, options = {}) {
   const model = getModel();
+  if (!options.preserveTrace) stopTrace();
   chapterIndex = (nextIndex + model.chapters.length) % model.chapters.length;
   selectedComponentId = null;
   inspectorAnchor = null;
@@ -548,11 +605,50 @@ function focusChapter() {
   camera.desiredPitch = -0.1;
 }
 
+function buildSystemScene(model) {
+  const yPositions = [-5.8, -3.0, 0, 3.0, 5.8];
+  return model.chapters.slice(1).map((chapter, index) => {
+    const stageChapter = index + 1;
+    const components = model.components.filter((component) => component.chapter === stageChapter && isModeVisible(component));
+    if (!components.length) return null;
+    const typeCounts = components.reduce((counts, component) => ({ ...counts, [component.type]: (counts[component.type] || 0) + 1 }), {});
+    const type = Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "compute";
+    return {
+      id: `stage-${stageChapter}`,
+      nodeId: `stage-${stageChapter}`,
+      parentId: `stage-${stageChapter}`,
+      label: chapter.name,
+      type,
+      chapter: stageChapter,
+      x: index % 2 ? 0.45 : -0.45,
+      y: yPositions[index],
+      z: 0,
+      w: 5.3,
+      h: 0.48,
+      d: 1.75,
+      grid: [Math.min(12, Math.max(4, components.length * 2)), 3],
+      shape: `${components.length} modules`,
+      input: stageChapter === 1 ? "sensor / instruction inputs" : "previous functional stage",
+      output: `${components.length} architecture modules`,
+      op: chapter.title,
+      norm: "See module view",
+      activation: "See layer view",
+      repeat: 1,
+      instance: 0,
+      isTop: true,
+      isSystemStage: true,
+      componentIds: components.map((component) => component.id),
+      description: `${chapter.lead} ${chapter.takeaway}`,
+    };
+  }).filter(Boolean);
+}
+
 function expandScene(model) {
+  if (architectureDepth === "system") return buildSystemScene(model);
   const blocks = [];
   model.components.forEach((component) => {
     if (!isModeVisible(component)) return;
-    if (chapterIndex > 0 && component.chapter === chapterIndex && component.layers?.length) {
+    if (architectureDepth === "layers" && chapterIndex > 0 && component.chapter === chapterIndex && component.layers?.length) {
       const detailGap = Math.min(0.36, 1.8 / Math.max(1, component.layers.length - 1));
       const startY = component.y - detailGap * (component.layers.length - 1) * 0.5;
       component.layers.forEach((detail, index) => {
@@ -576,7 +672,7 @@ function expandScene(model) {
       });
       return;
     }
-    const repeat = component.repeat || 1;
+    const repeat = architectureDepth === "modules" ? 1 : (component.repeat || 1);
     for (let index = 0; index < repeat; index += 1) {
       blocks.push({
         ...component,
@@ -595,6 +691,8 @@ function expandScene(model) {
 
 function selectModel(id) {
   if (!validModel(id)) return;
+  stopTrace();
+  flowStepIndex = 0;
   selectedModelId = id;
   chapterIndex = 0;
   selectedComponentId = null;
@@ -614,6 +712,8 @@ function selectModel(id) {
   el.aboutSourceLink.href = model.source;
   el.inspector.classList.remove("open");
   renderPathwayToggle();
+  renderDetailToggle();
+  renderTraceControls();
   resetCamera();
 }
 
@@ -630,8 +730,141 @@ function renderPathwayToggle() {
   });
 }
 
+function renderDetailToggle() {
+  el.detailToggle.querySelectorAll("button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.detail === architectureDepth);
+  });
+}
+
+function setArchitectureDepth(depth) {
+  if (!["system", "modules", "layers"].includes(depth) || depth === architectureDepth) return;
+  architectureDepth = depth;
+  selectedComponentId = null;
+  inspectorAnchor = null;
+  el.inspector.classList.remove("open");
+  sceneBlocks = expandScene(getModel());
+  renderDetailToggle();
+  renderChapter();
+  focusChapter();
+  updateTraceFocus();
+}
+
+function getFlowSteps(model = getModel()) {
+  const explicit = model.flowSteps?.[pathwayMode];
+  if (explicit?.length) return explicit;
+  const seen = new Set();
+  return (model.flowRows?.[pathwayMode] || []).flat().reduce((steps, id) => {
+    const component = model.components.find((item) => item.id === id);
+    if (!component || seen.has(id) || !isModeVisible(component)) return steps;
+    seen.add(id);
+    steps.push({ title: component.label, tensor: component.output || component.shape, nodes: [id], note: component.description });
+    return steps;
+  }, []);
+}
+
+function getActiveFlowStep() {
+  return traceEnabled ? getFlowSteps()[flowStepIndex] || null : null;
+}
+
+function getActiveTraceNodes() {
+  return new Set(getActiveFlowStep()?.nodes || []);
+}
+
+function updateTraceFocus() {
+  const activeNodes = getActiveTraceNodes();
+  el.chapterContent.querySelectorAll("[data-diagram-component]").forEach((node) => {
+    const active = activeNodes.has(node.dataset.diagramComponent);
+    node.classList.toggle("trace-active", traceEnabled && active);
+    node.classList.toggle("trace-muted", traceEnabled && !active);
+  });
+  el.chapterContent.querySelectorAll("[data-edge-from]").forEach((edge) => {
+    const active = activeNodes.has(edge.dataset.edgeFrom) || activeNodes.has(edge.dataset.edgeTo);
+    edge.classList.toggle("trace-active", traceEnabled && active);
+    edge.classList.toggle("trace-muted", traceEnabled && !active);
+  });
+}
+
+function focusTraceStep(step) {
+  if (!step) return;
+  let targets;
+  if (architectureDepth === "system") {
+    targets = sceneBlocks.filter((block) => block.componentIds?.some((id) => step.nodes.includes(id)));
+  } else {
+    targets = getModel().components.filter((component) => step.nodes.includes(component.id));
+  }
+  if (!targets.length) return;
+  camera.desiredTargetY = targets.reduce((sum, target) => sum + target.y, 0) / targets.length;
+  camera.desiredZoom = architectureDepth === "layers" ? 1.2 : 1.08;
+}
+
+function renderTraceControls() {
+  const steps = getFlowSteps();
+  flowStepIndex = Math.max(0, Math.min(flowStepIndex, Math.max(0, steps.length - 1)));
+  el.traceRange.max = Math.max(0, steps.length - 1);
+  el.traceRange.value = flowStepIndex;
+  el.traceRange.disabled = !steps.length;
+  el.tracePrevious.disabled = !steps.length;
+  el.traceNext.disabled = !steps.length;
+  const step = steps[flowStepIndex];
+  if (!traceEnabled || !step) {
+    el.traceReadout.textContent = steps.length ? `${steps.length} STEPS` : "UNAVAILABLE";
+    el.traceTitle.textContent = "Follow tensors through the model";
+    el.traceTensor.textContent = steps.length ? "Press play or choose a step." : "No forward trace is defined for this pathway.";
+    el.traceControls.title = "";
+  } else {
+    el.traceReadout.textContent = `${flowStepIndex + 1} / ${steps.length}`;
+    el.traceTitle.textContent = step.title;
+    el.traceTensor.textContent = step.tensor;
+    el.traceControls.title = step.note || "";
+  }
+  el.tracePlay.textContent = tracePlaying ? "Ⅱ" : "▶";
+  el.tracePlay.classList.toggle("playing", tracePlaying);
+  el.traceControls.classList.toggle("active", traceEnabled);
+  updateTraceFocus();
+}
+
+function setFlowStep(index) {
+  const steps = getFlowSteps();
+  if (!steps.length) return;
+  traceEnabled = true;
+  flowStepIndex = (index + steps.length) % steps.length;
+  renderTraceControls();
+  focusTraceStep(steps[flowStepIndex]);
+  updateUrl();
+}
+
+function stopTrace(disable = true) {
+  clearInterval(traceTimer);
+  traceTimer = null;
+  tracePlaying = false;
+  if (disable) traceEnabled = false;
+  renderTraceControls();
+  if (disable) updateUrl();
+}
+
+function toggleTracePlayback() {
+  if (tracePlaying) return stopTrace(false);
+  const steps = getFlowSteps();
+  if (!steps.length) return;
+  traceEnabled = true;
+  tracePlaying = true;
+  if (flowStepIndex >= steps.length - 1) flowStepIndex = 0;
+  renderTraceControls();
+  focusTraceStep(steps[flowStepIndex]);
+  clearInterval(traceTimer);
+  traceTimer = setInterval(() => {
+    if (flowStepIndex >= getFlowSteps().length - 1) {
+      stopTrace(false);
+      return;
+    }
+    setFlowStep(flowStepIndex + 1);
+  }, 2200);
+}
+
 function setPathway(mode) {
   if (!['inference', 'training'].includes(mode) || mode === pathwayMode) return;
+  stopTrace();
+  flowStepIndex = 0;
   pathwayMode = mode;
   selectedComponentId = null;
   inspectorAnchor = null;
@@ -639,6 +872,7 @@ function setPathway(mode) {
   sceneBlocks = expandScene(getModel());
   renderPathwayToggle();
   renderChapter();
+  renderTraceControls();
   focusChapter();
 }
 
@@ -718,6 +952,7 @@ function polygonPath(points) {
 
 function componentOpacity(component) {
   if (selectedComponentId === component.nodeId || selectedComponentId === component.id) return 1;
+  if (traceEnabled) return isTraceTarget(component, component.parentId || component.id) ? 1 : 0.1;
   if (chapterIndex === 0) return 0.82;
   return component.chapter === chapterIndex ? 1 : 0.13;
 }
@@ -754,23 +989,46 @@ function getComponentCenter(model, id) {
   };
 }
 
+function getSceneCenter(id) {
+  const blocks = sceneBlocks.filter((block) => block.nodeId === id || block.parentId === id || block.id === id);
+  if (!blocks.length) return null;
+  return {
+    x: blocks.reduce((sum, block) => sum + block.x, 0) / blocks.length,
+    y: blocks.reduce((sum, block) => sum + block.y, 0) / blocks.length,
+    z: blocks.reduce((sum, block) => sum + block.z, 0) / blocks.length,
+  };
+}
+
+function isTraceTarget(component, id, activeNodes = getActiveTraceNodes()) {
+  return activeNodes.has(id) || activeNodes.has(component?.id) || component?.componentIds?.some((componentId) => activeNodes.has(componentId));
+}
+
 function drawConnections(time) {
   const model = getModel();
-  model.links.filter(isModeVisible).forEach((linkItem, index) => {
+  const systemLinks = architectureDepth === "system"
+    ? sceneBlocks.slice(1).map((block, index) => ({ from: sceneBlocks[index].id, to: block.id, mode: "both", kind: "data" }))
+    : null;
+  const links = systemLinks || model.links.filter(isModeVisible);
+  const activeNodes = getActiveTraceNodes();
+  links.forEach((linkItem, index) => {
     const fromId = Array.isArray(linkItem) ? linkItem[0] : linkItem.from;
     const toId = Array.isArray(linkItem) ? linkItem[1] : linkItem.to;
-    const fromComponent = model.components.find((component) => component.id === fromId);
-    const toComponent = model.components.find((component) => component.id === toId);
+    const fromComponent = architectureDepth === "system" ? sceneBlocks.find((block) => block.id === fromId) : model.components.find((component) => component.id === fromId);
+    const toComponent = architectureDepth === "system" ? sceneBlocks.find((block) => block.id === toId) : model.components.find((component) => component.id === toId);
     if (!fromComponent || !toComponent || !isModeVisible(fromComponent) || !isModeVisible(toComponent)) return;
-    const from = getComponentCenter(model, fromId);
-    const to = getComponentCenter(model, toId);
+    const from = getSceneCenter(fromId) || getComponentCenter(model, fromId);
+    const to = getSceneCenter(toId) || getComponentCenter(model, toId);
     if (!from || !to) return;
     const start = project(from);
     const end = project(to);
-    const active = chapterIndex === 0 || fromComponent.chapter === chapterIndex || toComponent.chapter === chapterIndex;
+    const active = traceEnabled
+      ? isTraceTarget(fromComponent, fromId, activeNodes) || isTraceTarget(toComponent, toId, activeNodes)
+      : chapterIndex === 0 || fromComponent.chapter === chapterIndex || toComponent.chapter === chapterIndex;
     ctx.save();
-    ctx.strokeStyle = active ? shade(getModel().accent, 0.05, 0.42) : "rgba(87,103,98,0.08)";
-    ctx.lineWidth = active ? 1.15 : 0.65;
+    const kindColors = { cross: TYPE_COLORS.language, condition: "#3c7797", residual: "#9a7746", loop: TYPE_COLORS.action };
+    const linkColor = kindColors[linkItem.kind] || getModel().accent;
+    ctx.strokeStyle = active ? shade(linkColor, 0.05, traceEnabled ? 0.72 : 0.42) : "rgba(87,103,98,0.06)";
+    ctx.lineWidth = active ? (traceEnabled ? 1.8 : 1.15) : 0.65;
     ctx.setLineDash(active ? [] : [3, 4]);
     ctx.beginPath();
     ctx.moveTo(start.x, start.y);
@@ -780,7 +1038,7 @@ function drawConnections(time) {
       const t = (time * 0.00022 + index * 0.13) % 1;
       const x = start.x + (end.x - start.x) * t;
       const y = start.y + (end.y - start.y) * t;
-      ctx.fillStyle = shade(getModel().accent, 0.12, 0.9);
+      ctx.fillStyle = shade(linkColor, 0.12, 0.9);
       ctx.beginPath(); ctx.arc(x, y, 2.3, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
@@ -795,9 +1053,10 @@ function drawInternalConnections() {
   });
   groups.forEach((blocks) => {
     blocks.sort((a, b) => a.instance - b.instance);
+    const active = !traceEnabled || isTraceTarget(blocks[0], blocks[0].parentId);
     ctx.save();
-    ctx.strokeStyle = shade(TYPE_COLORS[blocks[0].type], -0.05, 0.55);
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = shade(TYPE_COLORS[blocks[0].type], -0.05, active ? 0.55 : 0.08);
+    ctx.lineWidth = active && traceEnabled ? 1.7 : 1;
     for (let index = 1; index < blocks.length; index += 1) {
       const from = project({ x: blocks[index - 1].x, y: blocks[index - 1].y, z: blocks[index - 1].z });
       const to = project({ x: blocks[index].x, y: blocks[index].y, z: blocks[index].z });
@@ -807,12 +1066,13 @@ function drawInternalConnections() {
   });
 }
 
-function drawBlock(block) {
+function drawBlock(block, time = 0) {
   const vertices3d = blockVertices(block);
   const projected = vertices3d.map(project);
   const transformed = vertices3d.map(rotatePoint);
   const opacity = componentOpacity(block);
   const color = TYPE_COLORS[block.type];
+  const traceActive = traceEnabled && isTraceTarget(block, block.parentId || block.id);
   const faces = [
     { ids: [0, 1, 2, 3], shade: -0.28 },
     { ids: [0, 4, 7, 3], shade: -0.16 },
@@ -827,8 +1087,10 @@ function drawBlock(block) {
     polygonPath(points);
     ctx.fillStyle = shade(color, face.shade, opacity);
     ctx.fill();
-    ctx.strokeStyle = shade(color, -0.28, Math.min(0.62, opacity + 0.08));
-    ctx.lineWidth = selectedComponentId === block.nodeId ? 1.7 : 0.65;
+    ctx.strokeStyle = traceActive
+      ? shade(color, 0.2, 0.82 + Math.sin(time * 0.006) * 0.12)
+      : shade(color, -0.28, Math.min(0.62, opacity + 0.08));
+    ctx.lineWidth = selectedComponentId === block.nodeId || traceActive ? 1.9 : 0.65;
     ctx.stroke();
     if (face.front) drawGrid(points, block.grid, opacity);
   });
@@ -883,7 +1145,7 @@ function renderScene(time = 0) {
   drawInternalConnections();
   [...sceneBlocks]
     .sort((a, b) => rotatePoint({ x: a.x, y: a.y, z: a.z }).z - rotatePoint({ x: b.x, y: b.y, z: b.z }).z)
-    .forEach(drawBlock);
+    .forEach((block) => drawBlock(block, time));
   sceneBlocks.forEach(drawLabel);
   if (el.inspector.classList.contains("open")) positionInspector();
   requestAnimationFrame(renderScene);
@@ -945,7 +1207,7 @@ function positionInspector() {
   el.inspector.style.width = `${inspectorWidth}px`;
   const inspectorHeight = el.inspector.offsetHeight;
   const safeTop = panel.width < 520 ? 154 : 112;
-  const safeBottom = 18;
+  const safeBottom = Math.max(18, el.traceControls.offsetHeight + 30);
   const rightX = bounds.maxX + gap;
   const leftX = bounds.minX - inspectorWidth - gap;
   let side;
@@ -978,7 +1240,10 @@ function positionInspector() {
 }
 
 function openInspector(component) {
-  const parent = getModel().components.find((item) => item.id === (component.parentId || component.id)) || component;
+  const model = getModel();
+  const parent = model.components.find((item) => item.id === (component.parentId || component.id)) || component;
+  const provenance = model.provenance || {};
+  const evidence = provenance.evidence?.[parent.id] || provenance.confidence || "Pinned to the primary source linked below";
   inspectorAnchor = {
     nodeId: component.nodeId || null,
     parentId: component.parentId || component.id,
@@ -996,8 +1261,16 @@ function openInspector(component) {
     ["Normalization", component.norm || parent.norm || "—"],
     ["Activation", component.activation || parent.activation || "—"],
     ["Repetition", component.isDetail ? `layer ${component.instance + 1} of ${parent.layers.length} shown` : (parent.repeatLabel || (parent.repeat > 1 ? `×${parent.repeat}` : "once"))],
+    ["Evidence", evidence],
+    ["Schema", `v${model.schemaVersion || 1} · ${provenance.status || "source-pinned"}`],
   ];
   el.inspectorSpecs.innerHTML = specs.map(([term, value]) => `<div><dt>${term}</dt><dd>${value}</dd></div>`).join("");
+  const [sourceLabel, sourceHref] = model.sources?.[0] || [];
+  el.inspectorSource.hidden = !sourceHref;
+  if (sourceHref) {
+    el.inspectorSource.href = sourceHref;
+    el.inspectorSource.textContent = `${sourceLabel} ↗`;
+  }
   el.inspector.style.setProperty("--accent", TYPE_COLORS[component.type]);
   el.inspector.classList.add("open");
   positionInspector();
@@ -1033,14 +1306,18 @@ function continueWalkthrough() {
 function renderComparison() {
   const modelA = getModel(el.compareA.value);
   const modelB = getModel(el.compareB.value);
-  const flow = (model) => `<div class="compare-flow" style="--flow-color:${model.accent}">${model.components.filter((component) => [1, 2, 3, 4, 5].includes(component.chapter)).reduce((items, component) => {
-    if (!items.some((item) => item.chapter === component.chapter)) items.push(component);
-    return items;
-  }, []).map((component, index) => `${index ? "<i>→</i>" : ""}<span title="${component.label}">${component.label}</span>`).join("")}</div>`;
-  el.compareVisual.innerHTML = flow(modelA) + flow(modelB);
-  const keys = Object.keys(modelA.compare);
+  const stages = [
+    ["Perception", "Backbone"],
+    ["Fusion / condition", "Fusion"],
+    ["Policy / generator", "Generator"],
+    ["Output unit", "Output"],
+    ["Execution loop", "Temporal loop"],
+  ];
+  const pipeline = (model) => `<section class="compare-pipeline" style="--flow-color:${model.accent}"><header><b>${model.tab}</b><small>${model.compare.Scope}</small></header>${stages.map(([label, key], index) => `${index ? '<i aria-hidden="true">↓</i>' : ""}<div class="compare-stage"><span>${label}</span><strong>${model.compare[key] || (key === "Fusion" ? model.compare.Inputs : "—")}</strong></div>`).join("")}</section>`;
+  el.compareVisual.innerHTML = pipeline(modelA) + pipeline(modelB);
+  const keys = [...new Set([...Object.keys(modelA.compare), ...Object.keys(modelB.compare)])];
   el.compareHead.innerHTML = `<tr><th>Design decision</th><th>${modelA.tab}</th><th>${modelB.tab}</th></tr>`;
-  el.compareBody.innerHTML = keys.map((key) => `<tr><td>${key}</td><td>${modelA.compare[key]}</td><td>${modelB.compare[key]}</td></tr>`).join("");
+  el.compareBody.innerHTML = keys.map((key) => `<tr><td>${key}</td><td>${modelA.compare[key] || "—"}</td><td>${modelB.compare[key] || "—"}</td></tr>`).join("");
 }
 
 function setupComparison() {
@@ -1048,7 +1325,7 @@ function setupComparison() {
   el.compareA.innerHTML = options;
   el.compareB.innerHTML = options;
   el.compareA.value = selectedModelId;
-  el.compareB.value = selectedModelId === "dreamzero" ? "gr00t" : "dreamzero";
+  el.compareB.value = selectedModelId === "act" ? "diffusion-policy" : "act";
   renderComparison();
 }
 
@@ -1060,6 +1337,17 @@ el.playButton.addEventListener("click", togglePlayback);
 el.pathwayToggle.addEventListener("click", (event) => {
   const button = event.target.closest("[data-pathway]");
   if (button) setPathway(button.dataset.pathway);
+});
+el.detailToggle.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-detail]");
+  if (button) setArchitectureDepth(button.dataset.detail);
+});
+el.tracePrevious.addEventListener("click", () => setFlowStep(flowStepIndex - 1));
+el.traceNext.addEventListener("click", () => setFlowStep(flowStepIndex + 1));
+el.tracePlay.addEventListener("click", toggleTracePlayback);
+el.traceRange.addEventListener("input", () => {
+  if (tracePlaying) stopTrace(false);
+  setFlowStep(Number(el.traceRange.value));
 });
 document.querySelector("#resetCamera").addEventListener("click", resetCamera);
 document.querySelector("#fullscreenButton").addEventListener("click", () => {
@@ -1132,5 +1420,6 @@ const initialPathway = pathwayMode;
 selectModel(selectedModelId);
 if (initialPathway !== pathwayMode) setPathway(initialPathway);
 setChapter(initialChapter, { keepScroll: true });
+if (requestedFlowStep !== null) setFlowStep(requestedFlowStep);
 resizeCanvas();
 requestAnimationFrame(renderScene);

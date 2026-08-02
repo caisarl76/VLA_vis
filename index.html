@@ -77,6 +77,13 @@
             <button data-pathway="training">Training</button>
           </div>
 
+          <div id="detailToggle" class="detail-toggle" role="group" aria-label="Select architecture detail level">
+            <span>DEPTH</span>
+            <button data-detail="system">System</button>
+            <button data-detail="modules">Modules</button>
+            <button class="active" data-detail="layers">Layers</button>
+          </div>
+
           <div class="canvas-tools">
             <button id="resetCamera" class="tool-button" aria-label="Reset camera" title="Reset camera">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.7M4 4v5h5" /></svg>
@@ -106,7 +113,23 @@
             <h2 id="inspectorTitle">Transformer policy</h2>
             <p id="inspectorBody"></p>
             <dl id="inspectorSpecs" class="inspector-specs"></dl>
+            <a id="inspectorSource" class="inspector-source" href="#" target="_blank" rel="noreferrer">Open architecture evidence ↗</a>
           </aside>
+
+          <section id="traceControls" class="trace-controls" aria-label="Forward-pass trace controls">
+            <header>
+              <span>FORWARD TRACE</span>
+              <em id="traceReadout">READY</em>
+            </header>
+            <strong id="traceTitle">Follow tensors through the model</strong>
+            <small id="traceTensor">Press play or choose a step.</small>
+            <div class="trace-transport">
+              <button id="tracePrevious" aria-label="Previous forward-pass step">‹</button>
+              <button id="tracePlay" class="trace-play" aria-label="Play forward pass">▶</button>
+              <input id="traceRange" type="range" min="0" max="0" value="0" aria-label="Forward-pass step" />
+              <button id="traceNext" aria-label="Next forward-pass step">›</button>
+            </div>
+          </section>
 
           <div id="visualLegend" class="visual-legend"></div>
         </section>
